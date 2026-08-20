@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -26,7 +27,13 @@ import com.example.skbt_up_gibdd_eyewitness.R
 @Composable
 fun AppTopBar(onBackClick: (() -> Unit)? = null) {
     Row(
-        modifier = Modifier.fillMaxWidth().height(62.dp).background(MaterialTheme.colorScheme.primary).padding(horizontal = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.primary)
+            .statusBarsPadding()
+            .padding(top = 10.dp)
+            .height(62.dp)
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBackClick != null) {

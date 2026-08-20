@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -29,6 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -49,8 +51,15 @@ import com.example.skbt_up_gibdd_eyewitness.ui.theme.SKBTUPGIBDDEYEWITNESSTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 
-private data class PreviewMessage(val text: String, val time: String, val outgoing: Boolean)
+private data class PreviewMessage(
+    val text: String,
+    val time: String,
+    val outgoing: Boolean,
+    val delivered: Boolean = true,
+)
 private enum class AttachmentTab { GALLERY, LOCATION }
 
 private val previewMessages = listOf(
@@ -71,7 +80,21 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
     var pendingCaptureUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var recentPhotoUris by remember { mutableStateOf<List<android.net.Uri>>(emptyList()) }
     var galleryAccessGranted by remember { mutableStateOf(hasGalleryPermission(context)) }
+    val textMessages = remember { mutableStateListOf<PreviewMessage>().apply { addAll(previewMessages) } }
     val localMediaMessages = remember { mutableStateListOf<MediaAttachment>() }
+    val sendTextMessage = {
+        val text = draft.trim()
+        if (text.isNotEmpty()) {
+            textMessages += PreviewMessage(
+                text = text,
+                time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")),
+                outgoing = true,
+                delivered = false,
+            )
+            draft = ""
+            Toast.makeText(context, "Сообщение отправлено", Toast.LENGTH_SHORT).show()
+        }
+    }
     val acceptMedia: (List<android.net.Uri>) -> Unit = { uris ->
         val result = resolveMediaSelection(context, uris)
         pendingSelection = (pendingSelection + result.accepted).distinctBy { it.uri }
@@ -98,7 +121,7 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
         pendingCaptureUri = null
     }
 
-    Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
         AppTopBar(onBackClick)
         Text(
             "Сегодня, 14 августа",
@@ -112,11 +135,15 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(previewMessages) { MessageBubble(it) }
+            items(textMessages) { MessageBubble(it) }
             items(localMediaMessages, key = { it.id }) { MediaBubble(it) }
         }
         Row(
-            Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 8.dp, vertical = 12.dp),
+            Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+                .navigationBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(
@@ -135,8 +162,11 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
             TextField(
                 value = draft,
                 onValueChange = { draft = it },
-                modifier = Modifier.weight(1f).height(48.dp),
+                modifier = Modifier.weight(1f).height(56.dp),
                 placeholder = { Text("Сообщение") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { sendTextMessage() }),
                 shape = RoundedCornerShape(22.dp),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = MaterialTheme.colorScheme.background,
@@ -146,7 +176,11 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
                 ),
             )
             Spacer(Modifier.width(6.dp))
-            IconButton(onClick = {}, modifier = Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary)) {
+            IconButton(
+                onClick = sendTextMessage,
+                enabled = draft.isNotBlank(),
+                modifier = Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+            ) {
                 Icon(Icons.AutoMirrored.Rounded.Send, "Отправить", tint = Color.White)
             }
         }
@@ -500,7 +534,12 @@ private fun MessageBubble(message: PreviewMessage) {
                     Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                     if (message.outgoing) {
                         Spacer(Modifier.width(4.dp))
-                        Icon(Icons.Rounded.DoneAll, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Icon(
+                            if (message.delivered) Icons.Rounded.DoneAll else Icons.Rounded.Done,
+                            null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
                     }
                 }
             }
