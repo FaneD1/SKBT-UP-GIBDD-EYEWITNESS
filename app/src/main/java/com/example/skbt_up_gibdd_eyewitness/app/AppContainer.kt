@@ -6,7 +6,9 @@ import com.example.skbt_up_gibdd_eyewitness.core.device.FingerprintProvider
 import com.example.skbt_up_gibdd_eyewitness.core.network.NetworkFactory
 import com.example.skbt_up_gibdd_eyewitness.core.storage.SecureDeviceStorage
 import com.example.skbt_up_gibdd_eyewitness.data.device.DefaultDeviceRepository
+import com.example.skbt_up_gibdd_eyewitness.data.message.DefaultMessageRepository
 import com.example.skbt_up_gibdd_eyewitness.domain.device.DeviceRepository
+import com.example.skbt_up_gibdd_eyewitness.domain.message.MessageRepository
 
 class AppContainer(context: Context) {
     private val storage = SecureDeviceStorage(context)
@@ -16,10 +18,21 @@ class AppContainer(context: Context) {
         sessionProvider = storage::readSession,
         enableHttpLogs = BuildConfig.DEBUG,
     )
+    private val messageApi = NetworkFactory.createMessageApi(
+        baseUrl = BuildConfig.API_BASE_URL,
+        sessionProvider = storage::readSession,
+        enableHttpLogs = BuildConfig.DEBUG,
+    )
 
     val deviceRepository: DeviceRepository = DefaultDeviceRepository(
         api = deviceApi,
         fingerprintProvider = fingerprintProvider,
         storage = storage,
+    )
+    val messageRepository: MessageRepository = DefaultMessageRepository(
+        messageApi,
+        storage,
+        context.contentResolver,
+        BuildConfig.API_BASE_URL,
     )
 }

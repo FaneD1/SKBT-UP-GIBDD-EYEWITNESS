@@ -1,11 +1,17 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
 
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
 val apiBaseUrl = providers.gradleProperty("API_BASE_URL")
-    .orElse("http://10.0.2.2:8001/")
+    .orElse("http://193.124.115.164:4401/")
     .get()
+val mapKitApiKey = localProperties.getProperty("MAPKIT_API_KEY", "")
 
 android {
     namespace = "com.example.skbt_up_gibdd_eyewitness"
@@ -22,6 +28,7 @@ android {
         versionCode = 1
         versionName = "1.0"
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+        buildConfigField("String", "MAPKIT_API_KEY", "\"$mapKitApiKey\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -48,6 +55,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
@@ -58,10 +66,13 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.coil.compose)
     implementation(libs.coil.gif)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
     implementation(libs.retrofit)
     implementation(libs.retrofit.converter.gson)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
+    implementation(libs.yandex.mapkit)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

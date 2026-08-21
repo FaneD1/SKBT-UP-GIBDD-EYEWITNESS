@@ -1,5 +1,11 @@
 package com.example.skbt_up_gibdd_eyewitness.feature.chat
 
+import android.annotation.SuppressLint
+import android.content.Context
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -12,6 +18,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -34,7 +41,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.skbt_up_gibdd_eyewitness.R
 import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.MediaAttachment
 import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.MediaKind
@@ -44,33 +61,97 @@ import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.galleryPermission
 import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.hasGalleryPermission
 import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.loadRecentPhotoUris
 import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.resolveMediaSelection
+import com.example.skbt_up_gibdd_eyewitness.feature.location.StaticLocation
+import com.example.skbt_up_gibdd_eyewitness.feature.location.LiveLocationService
+import com.example.skbt_up_gibdd_eyewitness.feature.location.LiveLocationState
+import com.example.skbt_up_gibdd_eyewitness.feature.location.LiveLocationTracker
+import com.example.skbt_up_gibdd_eyewitness.feature.location.hasLocationPermission
+import com.example.skbt_up_gibdd_eyewitness.feature.location.liveLocationPermissions
+import com.example.skbt_up_gibdd_eyewitness.domain.message.ChatMessage
+import com.example.skbt_up_gibdd_eyewitness.domain.message.MessageRepository
 import com.example.skbt_up_gibdd_eyewitness.ui.components.AppTopBar
 import com.example.skbt_up_gibdd_eyewitness.ui.theme.IncomingBubble
 import com.example.skbt_up_gibdd_eyewitness.ui.theme.OutgoingBubble
 import com.example.skbt_up_gibdd_eyewitness.ui.theme.SKBTUPGIBDDEYEWITNESSTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import java.time.LocalTime
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
+import java.util.Locale
+import okhttp3.Headers
 
 private data class PreviewMessage(
+    val id: String,
     val text: String,
     val time: String,
     val outgoing: Boolean,
     val delivered: Boolean = true,
+    val createdAt: String,
 )
+private data class StaticLocationMessage(
+    val id: String,
+    val location: StaticLocation,
+    val createdAt: String,
+    val delivered: Boolean,
+)
+private data class MediaMessage(
+    val id: String,
+    val attachment: MediaAttachment? = null,
+    val mimeType: String,
+    val remoteUrl: String? = null,
+    val accessToken: String? = null,
+    val createdAt: String,
+    val delivered: Boolean,
+)
+private sealed interface ChatTimelineItem {
+    val id: String
+    val createdAt: String
+
+    data class Text(val message: PreviewMessage) : ChatTimelineItem {
+        override val id = "text-${message.id}"
+        override val createdAt = message.createdAt
+    }
+
+    data class StaticLocation(val message: StaticLocationMessage) : ChatTimelineItem {
+        override val id = "location-${message.id}"
+        override val createdAt = message.createdAt
+    }
+
+    data class Media(val message: MediaMessage) : ChatTimelineItem {
+        override val id = "media-${message.id}"
+        override val createdAt = message.createdAt
+    }
+}
 private enum class AttachmentTab { GALLERY, LOCATION }
+private enum class LocationPermissionAction { CURRENT, LIVE }
+private const val SUCCESS_TOAST_TEXT = "Спасибо за обращение. Мы его уже передали инспекторам."
 
 private val previewMessages = listOf(
-    PreviewMessage("Вижу автомобиль, водитель ведёт себя подозрительно", "14:22", true),
-    PreviewMessage("Уточните государственный номер.", "14:23", false),
-    PreviewMessage("А123БВ44", "14:24", true),
+    PreviewMessage("preview-1", "Вижу автомобиль, водитель ведёт себя подозрительно", "14:22", true, createdAt = "2026-08-14T14:22:00Z"),
+    PreviewMessage("preview-2", "Уточните государственный номер.", "14:23", false, createdAt = "2026-08-14T14:23:00Z"),
+    PreviewMessage("preview-3", "А123БВ44", "14:24", true, createdAt = "2026-08-14T14:24:00Z"),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
+fun ChatScreen(
+    onBackClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    messageRepository: MessageRepository? = null,
+    selectedStaticLocation: StaticLocation? = null,
+    onStaticLocationConsumed: () -> Unit = {},
+    onOpenStaticLocationPicker: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val attachmentSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -80,19 +161,66 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
     var pendingCaptureUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var recentPhotoUris by remember { mutableStateOf<List<android.net.Uri>>(emptyList()) }
     var galleryAccessGranted by remember { mutableStateOf(hasGalleryPermission(context)) }
-    val textMessages = remember { mutableStateListOf<PreviewMessage>().apply { addAll(previewMessages) } }
-    val localMediaMessages = remember { mutableStateListOf<MediaAttachment>() }
-    val sendTextMessage = {
-        val text = draft.trim()
-        if (text.isNotEmpty()) {
-            textMessages += PreviewMessage(
-                text = text,
-                time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")),
-                outgoing = true,
-                delivered = false,
+    var locationPermissionAction by remember { mutableStateOf(LocationPermissionAction.LIVE) }
+    val liveLocationState by LiveLocationTracker.state.collectAsState()
+    val textMessages = remember(messageRepository) {
+        mutableStateListOf<PreviewMessage>().apply {
+            if (messageRepository == null) addAll(previewMessages)
+        }
+    }
+    val localMediaMessages = remember { mutableStateListOf<MediaMessage>() }
+    val staticLocationMessages = remember { mutableStateListOf<StaticLocationMessage>() }
+    val listState = rememberLazyListState()
+    var isSending by remember { mutableStateOf(false) }
+    val submitStaticLocation: suspend (StaticLocation) -> Unit = { location ->
+        val result = messageRepository?.sendStaticLocation(location.latitude, location.longitude)
+        if (result == null) {
+            staticLocationMessages += StaticLocationMessage(
+                "local-${System.currentTimeMillis()}",
+                location,
+                OffsetDateTime.now().toString(),
+                false,
             )
-            draft = ""
-            Toast.makeText(context, "Сообщение отправлено", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Геолокация отправлена", Toast.LENGTH_SHORT).show()
+        } else if (result.isSuccess) {
+            val message = result.getOrThrow()
+            staticLocationMessages.removeAll { it.id == message.id }
+            staticLocationMessages += StaticLocationMessage(message.id, location, message.createdAt, message.deliveredAt != null)
+            Toast.makeText(context, SUCCESS_TOAST_TEXT, Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(context, "Не удалось отправить геолокацию", Toast.LENGTH_LONG).show()
+        }
+    }
+    val sendTextMessage: () -> Unit = {
+        val text = draft.trim()
+        if (text.isNotEmpty() && !isSending) {
+            if (messageRepository == null) {
+                textMessages += PreviewMessage(
+                    id = "local-${System.currentTimeMillis()}",
+                    text = text,
+                    time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")),
+                    outgoing = true,
+                    delivered = false,
+                    createdAt = OffsetDateTime.now().toString(),
+                )
+                draft = ""
+                Toast.makeText(context, "Сообщение отправлено", Toast.LENGTH_SHORT).show()
+            } else {
+                scope.launch {
+                    isSending = true
+                    messageRepository.sendText(text)
+                        .onSuccess { message ->
+                            textMessages.removeAll { it.id == message.id }
+                            textMessages += message.toPreview(messageRepository.currentDeviceId())
+                            draft = ""
+                            Toast.makeText(context, SUCCESS_TOAST_TEXT, Toast.LENGTH_LONG).show()
+                        }
+                        .onFailure {
+                            Toast.makeText(context, "Не удалось отправить сообщение", Toast.LENGTH_SHORT).show()
+                        }
+                    isSending = false
+                }
+            }
         }
     }
     val acceptMedia: (List<android.net.Uri>) -> Unit = { uris ->
@@ -112,6 +240,22 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
         galleryAccessGranted = hasGalleryPermission(context)
         if (galleryAccessGranted) refreshRecentPhotos()
     }
+    val liveLocationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (hasLocationPermission(context)) {
+            when (locationPermissionAction) {
+                LocationPermissionAction.LIVE -> {
+                    LiveLocationService.start(context)
+                    Toast.makeText(context, "Live-геолокация включена на 15 минут", Toast.LENGTH_SHORT).show()
+                }
+                LocationPermissionAction.CURRENT -> scope.launch {
+                    currentStaticLocation(context)?.let { submitStaticLocation(it) }
+                        ?: Toast.makeText(context, "Не удалось определить местоположение", Toast.LENGTH_LONG).show()
+                }
+            }
+        } else {
+            Toast.makeText(context, "Нужен доступ к местоположению", Toast.LENGTH_LONG).show()
+        }
+    }
     val photoCapture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         pendingCaptureUri?.let { uri -> if (success) acceptMedia(listOf(uri)) }
         pendingCaptureUri = null
@@ -121,22 +265,114 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
         pendingCaptureUri = null
     }
 
+    LaunchedEffect(messageRepository) {
+        val repository = messageRepository ?: return@LaunchedEffect
+        while (isActive) {
+            repository.getOwnMessages().onSuccess { messages ->
+                val deviceId = repository.currentDeviceId()
+                textMessages.clear()
+                textMessages.addAll(messages.filter { it.type == "TEXT" }.map { it.toPreview(deviceId) })
+                staticLocationMessages.clear()
+                staticLocationMessages.addAll(
+                    messages.mapNotNull { message ->
+                        val latitude = message.staticLatitude ?: return@mapNotNull null
+                        val longitude = message.staticLongitude ?: return@mapNotNull null
+                        StaticLocationMessage(
+                            message.id,
+                            StaticLocation(latitude, longitude),
+                            message.createdAt,
+                            message.deliveredAt != null,
+                        )
+                    },
+                )
+                localMediaMessages.clear()
+                localMediaMessages.addAll(
+                    messages.mapNotNull { message ->
+                        val mimeType = message.mediaMimeType ?: return@mapNotNull null
+                        MediaMessage(
+                            id = message.id,
+                            mimeType = mimeType,
+                            remoteUrl = repository.mediaDownloadUrl(message.id),
+                            accessToken = repository.currentAccessToken(),
+                            createdAt = message.createdAt,
+                            delivered = message.deliveredAt != null,
+                        )
+                    },
+                )
+                messages
+                    .filter { it.senderDeviceId != deviceId && it.deliveredAt == null }
+                    .forEach { repository.markDelivered(it.id) }
+            }
+            delay(5_000)
+        }
+    }
+
+    LaunchedEffect(selectedStaticLocation) {
+        selectedStaticLocation?.let { location ->
+            val repository = messageRepository
+            if (repository == null) {
+                submitStaticLocation(location)
+            } else {
+                submitStaticLocation(location)
+            }
+            onStaticLocationConsumed()
+        }
+    }
+
+    val timelineItems = buildList<ChatTimelineItem> {
+        textMessages.forEach { add(ChatTimelineItem.Text(it)) }
+        localMediaMessages.forEach { add(ChatTimelineItem.Media(it)) }
+        staticLocationMessages.forEach { add(ChatTimelineItem.StaticLocation(it)) }
+    }.sortedBy { it.createdAt.toTimelineMillis() }
+
+    LaunchedEffect(timelineItems.size, liveLocationState) {
+        val timelineDates = timelineItems.map { it.createdAt.toMessageDate() }.distinct()
+        val activeLive = liveLocationState as? LiveLocationState.Active
+        val liveDate = activeLive?.let {
+            java.time.Instant.ofEpochMilli(it.startedAtMillis).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        }
+        val liveItemCount = if (activeLive == null) 0 else 1
+        val liveHeaderCount = if (liveDate != null && liveDate != timelineDates.lastOrNull()) 1 else 0
+        val itemCount = timelineItems.size + timelineDates.size + liveItemCount + liveHeaderCount
+        if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
+    }
+
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
         AppTopBar(onBackClick)
-        Text(
-            "Сегодня, 14 августа",
-            modifier = Modifier.fillMaxWidth().padding(vertical = 15.dp),
-            style = MaterialTheme.typography.labelSmall,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.outline,
-        )
         LazyColumn(
+            state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(textMessages) { MessageBubble(it) }
-            items(localMediaMessages, key = { it.id }) { MediaBubble(it) }
+            var previousDate: LocalDate? = null
+            timelineItems.forEach { timelineItem ->
+                val messageDate = timelineItem.createdAt.toMessageDate()
+                if (messageDate != previousDate) {
+                    item(key = "date-$messageDate") { DateSeparator(messageDate) }
+                    previousDate = messageDate
+                }
+                item(key = timelineItem.id) {
+                    when (timelineItem) {
+                        is ChatTimelineItem.Text -> MessageBubble(timelineItem.message)
+                        is ChatTimelineItem.Media -> MediaBubble(timelineItem.message)
+                        is ChatTimelineItem.StaticLocation -> StaticLocationBubble(timelineItem.message)
+                    }
+                }
+            }
+            (liveLocationState as? LiveLocationState.Active)?.let { active ->
+                val liveDate = java.time.Instant.ofEpochMilli(active.startedAtMillis)
+                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                if (liveDate != previousDate) {
+                    item(key = "date-live-$liveDate") { DateSeparator(liveDate) }
+                }
+                item(key = "live-location") {
+                    LiveLocationBubble(
+                        state = active,
+                        onStop = { LiveLocationService.stop(context) },
+                    )
+                }
+            }
         }
         Row(
             Modifier
@@ -178,7 +414,7 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
             Spacer(Modifier.width(6.dp))
             IconButton(
                 onClick = sendTextMessage,
-                enabled = draft.isNotBlank(),
+                enabled = draft.isNotBlank() && !isSending,
                 modifier = Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
             ) {
                 Icon(Icons.AutoMirrored.Rounded.Send, "Отправить", tint = Color.White)
@@ -226,12 +462,74 @@ fun ChatScreen(onBackClick: () -> Unit, modifier: Modifier = Modifier) {
                 },
                 onRemove = { removed -> pendingSelection = pendingSelection.filterNot { it.id == removed.id } },
                 onAdd = {
-                    localMediaMessages += pendingSelection
+                    val attachments = pendingSelection
                     pendingSelection = emptyList()
                     showAttachmentSheet = false
+                    scope.launch {
+                        var sentCount = 0
+                        attachments.forEach { attachment ->
+                            val result = messageRepository?.uploadMedia(
+                                attachment.uri,
+                                attachment.mimeType,
+                                attachment.sizeBytes,
+                            )
+                            if (result == null) {
+                                localMediaMessages += MediaMessage(
+                                    id = attachment.id,
+                                    attachment = attachment,
+                                    mimeType = attachment.mimeType,
+                                    createdAt = OffsetDateTime.now().toString(),
+                                    delivered = false,
+                                )
+                                sentCount++
+                            } else if (result.isSuccess) {
+                                val message = result.getOrThrow()
+                                localMediaMessages += MediaMessage(
+                                    id = message.id,
+                                    attachment = attachment,
+                                    mimeType = attachment.mimeType,
+                                    createdAt = message.createdAt,
+                                    delivered = message.deliveredAt != null,
+                                )
+                                sentCount++
+                            }
+                        }
+                        val message = when {
+                            sentCount == attachments.size -> SUCCESS_TOAST_TEXT
+                            sentCount > 0 -> "Отправлено файлов: $sentCount из ${attachments.size}"
+                            else -> "Не удалось отправить медиа"
+                        }
+                        Toast.makeText(context, message, if (sentCount > 0) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
+                    }
                 },
-                onLocationSelected = { label ->
-                    Toast.makeText(context, "$label: подключим на этапе геолокации", Toast.LENGTH_SHORT).show()
+                onCurrentLocation = {
+                    showAttachmentSheet = false
+                    locationPermissionAction = LocationPermissionAction.CURRENT
+                    if (hasLocationPermission(context)) {
+                        scope.launch {
+                            currentStaticLocation(context)?.let { submitStaticLocation(it) }
+                                ?: Toast.makeText(context, "Не удалось определить местоположение", Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        liveLocationPermissionLauncher.launch(liveLocationPermissions())
+                    }
+                },
+                onOpenStaticLocationPicker = {
+                    showAttachmentSheet = false
+                    onOpenStaticLocationPicker()
+                },
+                onStartLiveLocation = {
+                    showAttachmentSheet = false
+                    if (liveLocationState is LiveLocationState.Active) {
+                        Toast.makeText(context, "Live-геолокация уже активна", Toast.LENGTH_SHORT).show()
+                    } else if (hasLocationPermission(context)) {
+                        locationPermissionAction = LocationPermissionAction.LIVE
+                        LiveLocationService.start(context)
+                        Toast.makeText(context, "Live-геолокация включена на 15 минут", Toast.LENGTH_SHORT).show()
+                    } else {
+                        locationPermissionAction = LocationPermissionAction.LIVE
+                        liveLocationPermissionLauncher.launch(liveLocationPermissions())
+                    }
                 },
             )
         }
@@ -251,7 +549,9 @@ private fun AttachmentSheet(
     onTakeVideo: () -> Unit,
     onRemove: (MediaAttachment) -> Unit,
     onAdd: () -> Unit,
-    onLocationSelected: (String) -> Unit,
+    onCurrentLocation: () -> Unit,
+    onOpenStaticLocationPicker: () -> Unit,
+    onStartLiveLocation: () -> Unit,
 ) {
     var selectedTab by remember { mutableStateOf(AttachmentTab.GALLERY) }
     Column(Modifier.fillMaxWidth().heightIn(min = 420.dp, max = 620.dp)) {
@@ -282,7 +582,7 @@ private fun AttachmentSheet(
                     onAdd = onAdd,
                 )
             } else {
-                LocationAttachmentContent(onLocationSelected)
+                LocationAttachmentContent(onCurrentLocation, onOpenStaticLocationPicker, onStartLiveLocation)
             }
         }
 
@@ -413,12 +713,16 @@ private fun CaptureAction(
 }
 
 @Composable
-private fun LocationAttachmentContent(onSelected: (String) -> Unit) {
+private fun LocationAttachmentContent(
+    onCurrentLocation: () -> Unit,
+    onOpenStaticLocationPicker: () -> Unit,
+    onStartLiveLocation: () -> Unit,
+) {
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Как поделиться местоположением?", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 8.dp))
-        LocationOption(Icons.Rounded.MyLocation, "Текущее местоположение", "Отправить координаты устройства") { onSelected("Текущее местоположение") }
-        LocationOption(Icons.Rounded.Map, "Выбрать точку на карте", "Указать место вручную") { onSelected("Выбор точки на карте") }
-        LocationOption(Icons.Rounded.ShareLocation, "Live-геолокация", "Передавать координаты 15 минут") { onSelected("Live-геолокация") }
+        LocationOption(Icons.Rounded.MyLocation, "Текущее местоположение", "Отправить координаты устройства", onCurrentLocation)
+        LocationOption(Icons.Rounded.Map, "Выбрать точку на карте", "Указать место вручную", onOpenStaticLocationPicker)
+        LocationOption(Icons.Rounded.ShareLocation, "Live-геолокация", "Передавать координаты 15 минут", onStartLiveLocation)
     }
 }
 
@@ -476,22 +780,228 @@ private fun MediaPreviewTile(attachment: MediaAttachment, onRemove: (MediaAttach
 }
 
 @Composable
-private fun MediaBubble(attachment: MediaAttachment) {
+private fun MediaBubble(message: MediaMessage) {
+    val context = LocalContext.current
+    var showVideoPlayer by remember { mutableStateOf(false) }
+    var showImageViewer by remember { mutableStateOf(false) }
+    val isVideo = message.mimeType.startsWith("video/")
+    val kindLabel = when {
+        message.mimeType == "image/gif" -> "GIF"
+        message.mimeType.startsWith("video/") -> "Видео"
+        else -> "Фото"
+    }
+    val remoteModel = remember(message.remoteUrl, message.accessToken) {
+        message.remoteUrl?.let { url ->
+            val headers = Headers.Builder()
+                .add("X-Client-App", "eyewitness")
+                .apply { message.accessToken?.let { add("Authorization", "Bearer $it") } }
+                .build()
+            ImageRequest.Builder(context).data(url).headers(headers).build()
+        }
+    }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
-        Box(Modifier.width(200.dp).height(140.dp).clip(RoundedCornerShape(16.dp, 4.dp, 16.dp, 16.dp)).background(Color(0xFF1A2840))) {
-            MediaContent(attachment, Modifier.fillMaxSize())
+        Box(
+            Modifier.width(200.dp).height(140.dp)
+                .clip(RoundedCornerShape(16.dp, 4.dp, 16.dp, 16.dp))
+                .background(Color(0xFF1A2840))
+                .clickable {
+                    if (isVideo) showVideoPlayer = true else showImageViewer = true
+                },
+        ) {
+            when {
+                message.attachment != null -> MediaContent(message.attachment, Modifier.fillMaxSize())
+                message.mimeType.startsWith("video/") -> Icon(
+                    Icons.Rounded.PlayArrow,
+                    "Видео",
+                    tint = Color.White,
+                    modifier = Modifier.size(48.dp).align(Alignment.Center),
+                )
+                remoteModel != null -> AsyncImage(
+                    model = remoteModel,
+                    contentDescription = kindLabel,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
             Text(
-                when (attachment.kind) { MediaKind.PHOTO -> "Фото"; MediaKind.VIDEO -> "Видео"; MediaKind.GIF -> "GIF" },
+                kindLabel,
                 modifier = Modifier.align(Alignment.BottomStart).background(Color(0x99000000)).padding(horizontal = 8.dp, vertical = 4.dp),
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall,
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp, end = 2.dp)) {
-            Icon(Icons.Rounded.HourglassTop, null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(13.dp))
+            Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
             Spacer(Modifier.width(4.dp))
-            Text("Ожидает подключения", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            DeliveryChecks(message.delivered)
         }
+    }
+    if (showVideoPlayer) VideoPlayerDialog(message, onDismiss = { showVideoPlayer = false })
+    if (showImageViewer) ImageViewerDialog(message, remoteModel, onDismiss = { showImageViewer = false })
+}
+
+@Composable
+private fun ImageViewerDialog(
+    message: MediaMessage,
+    remoteModel: ImageRequest?,
+    onDismiss: () -> Unit,
+) {
+    val imageModel: Any = message.attachment?.uri ?: remoteModel ?: return
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize()) {
+                AsyncImage(
+                    model = imageModel,
+                    contentDescription = if (message.mimeType == "image/gif") "GIF" else "Фото",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)
+                        .background(Color(0x99000000), CircleShape),
+                ) { Icon(Icons.Rounded.Close, "Закрыть фото", tint = Color.White) }
+            }
+        }
+    }
+}
+
+@UnstableApi
+@Composable
+private fun VideoPlayerDialog(message: MediaMessage, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val mediaUri = message.attachment?.uri ?: message.remoteUrl?.let(android.net.Uri::parse) ?: return
+    val player = remember(mediaUri, message.accessToken) {
+        val builder = ExoPlayer.Builder(context)
+        if (message.remoteUrl != null) {
+            val headers = buildMap {
+                put("X-Client-App", "eyewitness")
+                message.accessToken?.let { put("Authorization", "Bearer $it") }
+            }
+            val httpFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers)
+            builder.setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(httpFactory))
+        }
+        builder.build().apply {
+            setMediaItem(MediaItem.fromUri(mediaUri))
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(player) { onDispose { player.release() } }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize()) {
+                AndroidView(
+                    factory = { playerContext ->
+                        PlayerView(playerContext).apply {
+                            this.player = player
+                            useController = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)
+                        .background(Color(0x99000000), CircleShape),
+                ) { Icon(Icons.Rounded.Close, "Закрыть видео", tint = Color.White) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StaticLocationBubble(message: StaticLocationMessage) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        Surface(
+            color = OutgoingBubble,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.width(230.dp),
+        ) {
+            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp)) {
+                    Icon(Icons.Rounded.LocationOn, null, tint = Color.White, modifier = Modifier.padding(9.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("Точка на карте", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        String.format(java.util.Locale.US, "%.6f, %.6f", message.location.latitude, message.location.longitude),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
+        Row(modifier = Modifier.padding(top = 3.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            Spacer(Modifier.width(4.dp))
+            DeliveryChecks(message.delivered)
+        }
+    }
+}
+
+@Composable
+private fun LiveLocationBubble(
+    state: LiveLocationState.Active,
+    onStop: () -> Unit,
+) {
+    var nowMillis by remember(state.endsAtMillis) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(state.endsAtMillis) {
+        while (nowMillis < state.endsAtMillis) {
+            delay(1_000)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+    val remainingSeconds = ((state.endsAtMillis - nowMillis).coerceAtLeast(0L) / 1_000L).toInt()
+    val minutes = remainingSeconds / 60
+    val seconds = remainingSeconds % 60
+
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        Surface(
+            color = OutgoingBubble,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.width(270.dp),
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp)) {
+                        Icon(Icons.Rounded.ShareLocation, null, tint = Color.White, modifier = Modifier.padding(9.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text("Live-геолокация", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            "Осталось %02d:%02d".format(minutes, seconds),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(9.dp))
+                Text(
+                    state.latestLocation?.let {
+                        String.format(java.util.Locale.US, "%.6f, %.6f", it.latitude, it.longitude)
+                    } ?: "Ожидание координат GPS…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    "Получено точек: ${state.pointsRecorded}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                TextButton(onClick = onStop, modifier = Modifier.align(Alignment.End)) {
+                    Text("Остановить")
+                }
+            }
+        }
+        Text(
+            "${java.time.Instant.ofEpochMilli(state.startedAtMillis).atZone(java.time.ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))} · Точки отправляются на сервер каждую секунду",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.padding(top = 3.dp, end = 2.dp),
+        )
     }
 }
 
@@ -534,17 +1044,104 @@ private fun MessageBubble(message: PreviewMessage) {
                     Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                     if (message.outgoing) {
                         Spacer(Modifier.width(4.dp))
-                        Icon(
-                            if (message.delivered) Icons.Rounded.DoneAll else Icons.Rounded.Done,
-                            null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
+                        DeliveryChecks(message.delivered)
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun DeliveryChecks(delivered: Boolean) {
+    Icon(
+        imageVector = if (delivered) Icons.Rounded.DoneAll else Icons.Rounded.Done,
+        contentDescription = if (delivered) "Доставлено сотруднику" else "Отправлено на сервер",
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(18.dp),
+    )
+}
+
+private fun ChatMessage.toPreview(currentDeviceId: String?) = PreviewMessage(
+    id = id,
+    text = text,
+    time = createdAt.toMessageTime(),
+    outgoing = senderDeviceId == currentDeviceId,
+    delivered = deliveredAt != null,
+    createdAt = createdAt,
+)
+
+@Composable
+private fun DateSeparator(date: LocalDate) {
+    Text(
+        text = date.toDateHeader(),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        style = MaterialTheme.typography.labelSmall,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.outline,
+    )
+}
+
+private fun String.toMessageTime(): String = runCatching {
+    OffsetDateTime.parse(this).atZoneSameInstant(java.time.ZoneId.systemDefault())
+        .toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
+}.recoverCatching {
+    LocalDateTime.parse(this).atOffset(java.time.ZoneOffset.UTC)
+        .atZoneSameInstant(java.time.ZoneId.systemDefault())
+        .toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
+}.getOrElse {
+    substringAfter('T', "--:--").take(5).takeIf { value -> value.matches(Regex("\\d{2}:\\d{2}")) } ?: "--:--"
+}
+
+private fun LocalDate.toDateHeader(): String {
+    val monthName = month.getDisplayName(TextStyle.FULL, Locale.forLanguageTag("ru"))
+    val dateText = "$dayOfMonth $monthName" + if (year != LocalDate.now().year) " $year" else ""
+    return when (this) {
+        LocalDate.now() -> "Сегодня, $dateText"
+        LocalDate.now().minusDays(1) -> "Вчера, $dateText"
+        else -> dateText.replaceFirstChar { it.uppercase(Locale.forLanguageTag("ru")) }
+    }
+}
+
+private fun String.toMessageDate(): LocalDate = runCatching {
+    OffsetDateTime.parse(this).atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate()
+}.recoverCatching {
+    LocalDateTime.parse(this).atOffset(java.time.ZoneOffset.UTC)
+        .atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate()
+}.getOrElse { LocalDate.now() }
+
+private fun String.toTimelineMillis(): Long = runCatching {
+    OffsetDateTime.parse(this).toInstant().toEpochMilli()
+}.recoverCatching {
+    LocalDateTime.parse(this).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+}.getOrElse { Long.MAX_VALUE }
+
+@SuppressLint("MissingPermission")
+private suspend fun currentStaticLocation(context: Context): StaticLocation? {
+    if (!hasLocationPermission(context)) return null
+    val manager = context.getSystemService(LocationManager::class.java)
+    val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        .filter(manager::isProviderEnabled)
+    if (providers.isEmpty()) return null
+
+    val freshLocation = withTimeoutOrNull(10_000L) {
+        suspendCancellableCoroutine<Location?> { continuation ->
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    manager.removeUpdates(this)
+                    if (continuation.isActive) continuation.resume(location)
+                }
+            }
+            continuation.invokeOnCancellation { manager.removeUpdates(listener) }
+            runCatching {
+                manager.requestSingleUpdate(providers.first(), listener, Looper.getMainLooper())
+            }.onFailure {
+                if (continuation.isActive) continuation.resume(null)
+            }
+        }
+    }
+    val location = freshLocation ?: providers.mapNotNull(manager::getLastKnownLocation).maxByOrNull(Location::getTime)
+    return location?.let { StaticLocation(it.latitude, it.longitude) }
 }
 
 @Preview(showBackground = true, widthDp = 403, heightDp = 874)

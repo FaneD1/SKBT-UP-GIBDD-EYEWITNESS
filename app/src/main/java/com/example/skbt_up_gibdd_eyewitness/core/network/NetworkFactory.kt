@@ -34,6 +34,31 @@ object NetworkFactory {
             .create(DeviceApi::class.java)
     }
 
+    fun createMessageApi(
+        baseUrl: String,
+        sessionProvider: () -> DeviceSession?,
+        enableHttpLogs: Boolean,
+    ): MessageApi {
+        require(baseUrl.endsWith('/')) { "API base URL must end with /" }
+        val client = OkHttpClient.Builder()
+            .addInterceptor(eyewitnessHeaders(sessionProvider))
+            .apply {
+                if (enableHttpLogs) {
+                    addInterceptor(HttpLoggingInterceptor().apply {
+                        level = HttpLoggingInterceptor.Level.BASIC
+                        redactHeader("Authorization")
+                    })
+                }
+            }
+            .build()
+        return Retrofit.Builder()
+            .baseUrl(baseUrl)
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(MessageApi::class.java)
+    }
+
     private fun eyewitnessHeaders(sessionProvider: () -> DeviceSession?) = Interceptor { chain ->
         val original = chain.request()
         val request = original.newBuilder()

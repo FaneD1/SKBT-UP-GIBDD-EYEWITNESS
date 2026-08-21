@@ -19,7 +19,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -29,9 +29,13 @@ import androidx.compose.ui.unit.dp
 import com.example.skbt_up_gibdd_eyewitness.R
 import com.example.skbt_up_gibdd_eyewitness.ui.components.AppTopBar
 import com.example.skbt_up_gibdd_eyewitness.ui.theme.SKBTUPGIBDDEYEWITNESSTheme
+import kotlinx.coroutines.launch
 
 @Composable
-fun WelcomeScreen(onStartClick: () -> Unit, modifier: Modifier = Modifier) {
+fun WelcomeScreen(onStartClick: suspend () -> Result<Unit>, modifier: Modifier = Modifier) {
+    val scope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         AppTopBar()
         Column(
@@ -60,12 +64,28 @@ fun WelcomeScreen(onStartClick: () -> Unit, modifier: Modifier = Modifier) {
                 }
             }
             Spacer(Modifier.height(20.dp))
+            errorMessage?.let {
+                Text(
+                    "Не удалось подключиться к серверу. Проверьте интернет и повторите попытку.",
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 10.dp),
+                )
+            }
             Button(
-                onClick = onStartClick,
+                onClick = {
+                    scope.launch {
+                        isLoading = true
+                        errorMessage = null
+                        onStartClick().onFailure { errorMessage = it.message ?: "Ошибка подключения" }
+                        isLoading = false
+                    }
+                },
+                enabled = !isLoading,
                 modifier = Modifier.fillMaxWidth().height(55.dp),
                 shape = RoundedCornerShape(15.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-            ) { Text("Начать", style = MaterialTheme.typography.labelLarge) }
+            ) { Text(if (isLoading) "Подключение…" else "Начать", style = MaterialTheme.typography.labelLarge) }
         }
     }
 }
@@ -75,4 +95,4 @@ private fun WelcomeParagraph(text: String) = Text(text, style = MaterialTheme.ty
 
 @Preview(showBackground = true, widthDp = 403, heightDp = 874)
 @Composable
-private fun WelcomePreview() = SKBTUPGIBDDEYEWITNESSTheme { WelcomeScreen({}) }
+private fun WelcomePreview() = SKBTUPGIBDDEYEWITNESSTheme { WelcomeScreen({ Result.success(Unit) }) }
